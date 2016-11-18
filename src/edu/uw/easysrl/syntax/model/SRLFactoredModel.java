@@ -1,15 +1,15 @@
 package edu.uw.easysrl.syntax.model;
 
+import com.carrotsearch.hppc.ObjectDoubleHashMap;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.PriorityQueue;
-
-import com.carrotsearch.hppc.ObjectDoubleHashMap;
 
 import edu.uw.easysrl.dependencies.SRLFrame.SRLLabel;
 import edu.uw.easysrl.dependencies.UnlabelledDependency;
+import edu.uw.easysrl.main.InputReader.InputToParser;
 import edu.uw.easysrl.main.InputReader.InputWord;
 import edu.uw.easysrl.syntax.grammar.Category;
 import edu.uw.easysrl.syntax.grammar.SyntaxTreeNode;
@@ -25,6 +25,7 @@ import edu.uw.easysrl.syntax.model.feature.FeatureCache;
 import edu.uw.easysrl.syntax.model.feature.FeatureCache.SlotFeatureCache;
 import edu.uw.easysrl.syntax.model.feature.FeatureSet;
 import edu.uw.easysrl.syntax.parser.AbstractParser.UnaryRule;
+import edu.uw.easysrl.syntax.parser.Agenda;
 import edu.uw.easysrl.util.Util.Scored;
 
 public class SRLFactoredModel extends Model {
@@ -34,9 +35,7 @@ public class SRLFactoredModel extends Model {
 	private SRLFactoredModel(final List<ExtendedLexicalEntry> forests,
 			final Collection<UnaryRuleFeature> unaryRuleFeatures, final ObjectDoubleHashMap<FeatureKey> featureToScore,
 			final Collection<BinaryFeature> binaryFeatures, final Collection<RootCategoryFeature> rootFeatures,
-			final List<InputWord> sentence
-
-	) {
+			final List<InputWord> sentence) {
 		super(forests.size());
 		this.forests = forests;
 		this.unaryRuleFeatures = unaryRuleFeatures;
@@ -63,7 +62,7 @@ public class SRLFactoredModel extends Model {
 	}
 
 	@Override
-	public void buildAgenda(final PriorityQueue<AgendaItem> queue, final List<InputWord> words) {
+	public void buildAgenda(final Agenda queue, final List<InputWord> words) {
 
 		for (int i = 0; i < words.size(); i++) {
 			final InputWord word = words.get(i);
@@ -84,7 +83,7 @@ public class SRLFactoredModel extends Model {
 	}
 
 	@Override
-	double getUpperBoundForWord(final int index) {
+	public double getUpperBoundForWord(final int index) {
 		return forests.get(index).getLogUnnormalizedViterbiScore();
 	}
 
@@ -177,7 +176,7 @@ public class SRLFactoredModel extends Model {
 
 	// Worst class name EVER.
 	public static class SRLFactoredModelFactory extends ModelFactory {
-		private final CutoffsDictionary cutoffsDictionary;
+		private final CutoffsDictionaryInterface cutoffsDictionary;
 		private final FeatureSet featureSet;
 		private final Collection<Category> lexicalCategories;
 		private final boolean usingDependencyFeatures;
@@ -187,7 +186,7 @@ public class SRLFactoredModel extends Model {
 		private final ObjectDoubleHashMap<FeatureKey> featureToScore;
 
 		public SRLFactoredModelFactory(final double[] weights, final FeatureSet featureSet,
-				final Collection<Category> lexicalCategories, final CutoffsDictionary cutoffs,
+				final Collection<Category> lexicalCategories, final CutoffsDictionaryInterface cutoffs,
 				final Map<FeatureKey, Integer> featureToIndex) {
 			this.featureSet = featureSet;
 			this.cutoffsDictionary = cutoffs;
@@ -210,7 +209,8 @@ public class SRLFactoredModel extends Model {
 		}
 
 		@Override
-		public Model make(final List<InputWord> sentence) {
+		public Model make(final InputToParser input) {
+			final List<InputWord> sentence = input.getInputWords();
 			final FeatureCache featureCache = new FeatureCache(sentence, featureToScore, featureSet,
 					supertaggingFeatureScore, slotFeatureCache);
 
@@ -235,6 +235,11 @@ public class SRLFactoredModel extends Model {
 		@Override
 		public Collection<Category> getLexicalCategories() {
 			return lexicalCategories;
+		}
+
+		@Override
+		public boolean isUsingDependencies() {
+			return true;
 		}
 
 	}

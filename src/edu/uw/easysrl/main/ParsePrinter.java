@@ -32,7 +32,8 @@ public abstract class ParsePrinter {
 	public final static ParsePrinter PROLOG_PRINTER = new PrologPrinter();
 	public final static ParsePrinter EXTENDED_CCGBANK_PRINTER = new ExtendedCCGBankPrinter();
 	public final static ParsePrinter SUPERTAG_PRINTER = new SupertagPrinter();
-	public final static ParsePrinter SRL_PRINTER = new SRLprinter();
+	public final static ParsePrinter SRL_PRINTER = new SRLprinter(false);
+	public final static ParsePrinter SRL_PRINTER_WITH_INDICES = new SRLprinter(true);
 	public final static ParsePrinter LOGIC_PRINTER = new LogicPrinter();
 	public final static ParsePrinter DEPENDENCIES_PRINTER = new DependenciesPrinter();
 
@@ -213,9 +214,19 @@ public abstract class ParsePrinter {
 		protected boolean outputsLogic() {
 			return false;
 		}
+
+		@Override
+		protected boolean outputsDependencies() {
+			return false;
+		}
 	}
 
 	private static class SRLprinter extends ParsePrinter {
+		private final boolean includeWordIndices;
+
+		public SRLprinter(final boolean includeWordIndices) {
+			this.includeWordIndices = includeWordIndices;
+		}
 
 		@Override
 		protected void printFileHeader(final StringBuilder result) {
@@ -237,11 +248,10 @@ public abstract class ParsePrinter {
 		protected void printParse(final SyntaxTreeNode parse, final int sentenceNumber, final StringBuilder result) {
 			final List<ResolvedDependency> deps = parse.getAllLabelledDependencies();
 			for (final ResolvedDependency dep : deps) {
-				// output = output + "\n" + dep.toString();
 				if (dep.getSemanticRole() != SRLFrame.NONE) {
+					final SyntaxTreeNode argumentConstituent = getArgumentConstituent(parse, dep);
 					result.append(getPredicate(parse, dep.getPropbankPredicateIndex()));
 					result.append(" " + dep.getSemanticRole());
-					final SyntaxTreeNode argumentConstituent = getArgumentConstituent(parse, dep);
 					int i = 0;
 					final List<SyntaxTreeNodeLeaf> argumentWords = argumentConstituent.getLeaves();
 					for (final SyntaxTreeNodeLeaf child : argumentWords) {
@@ -252,9 +262,13 @@ public abstract class ParsePrinter {
 							// Drop trailing punctutation
 						} else {
 							result.append(" " + child.getWord());
+							if (includeWordIndices) {
+								result.append("@" + child.getHeadIndex());
+							}
 						}
 						i++;
 					}
+
 					result.append("\n");
 				}
 
@@ -268,8 +282,11 @@ public abstract class ParsePrinter {
 
 		private String getPredicate(final SyntaxTreeNode parse, final int index) {
 			final SyntaxTreeNodeLeaf node = parse.getLeaves().get(index);
-			final String result = node.getWord();
+			final StringBuilder result = new StringBuilder();
+			result.append(MorphaStemmer.stemToken(node.getWord()));
 			final Category category = node.getCategory();
+			final List<Integer> indices = new ArrayList<>();
+			indices.add(index);
 
 			// Add particles if necessary. e.g. give_up, take_off
 			for (int i = 1; i <= category.getNumberOfArguments(); i++) {
@@ -277,13 +294,25 @@ public abstract class ParsePrinter {
 					for (final ResolvedDependency dep : parse.getAllLabelledDependencies()) {
 						if (dep.getHead() == index && dep.getArgNumber() == i) {
 							final String particle = parse.getLeaves().get(dep.getArgumentIndex()).getWord();
-							return result + "_" + particle;
+							indices.add(dep.getArgumentIndex());
+							result.append("_");
+							result.append(particle);
+							break;
 						}
 					}
 				}
 			}
 
-			return result;
+			if (includeWordIndices) {
+				result.append("@");
+				for (int i = 0; i < indices.size(); i++) {
+					if (i > 0) {
+						result.append(",");
+					}
+					result.append(indices.get(i));
+				}
+			}
+			return result.toString();
 		}
 
 		private SyntaxTreeNode getArgumentConstituent(final SyntaxTreeNode node, final ResolvedDependency dep) {
@@ -321,6 +350,11 @@ public abstract class ParsePrinter {
 		@Override
 		protected boolean outputsLogic() {
 			return false;
+		}
+
+		@Override
+		protected boolean outputsDependencies() {
+			return true;
 		}
 	}
 
@@ -612,6 +646,11 @@ public abstract class ParsePrinter {
 		protected boolean outputsLogic() {
 			return true;
 		}
+
+		@Override
+		protected boolean outputsDependencies() {
+			return true;
+		}
 	}
 
 	private static class SupertagPrinter extends ParsePrinter {
@@ -650,6 +689,11 @@ public abstract class ParsePrinter {
 
 		@Override
 		protected boolean outputsLogic() {
+			return false;
+		}
+
+		@Override
+		protected boolean outputsDependencies() {
 			return false;
 		}
 	}
@@ -700,13 +744,18 @@ public abstract class ParsePrinter {
 		protected boolean outputsLogic() {
 			return true;
 		}
+
+		@Override
+		protected boolean outputsDependencies() {
+			return true;
+		}
 	}
 
 	private static class PrologPrinter extends ParsePrinter {
 
 		/*
 		 * ccg(2, ba('S[dcl]', lf(2,1,'NP'), fa('S[dcl]\NP', lf(2,2,'(S[dcl]\NP)/NP'), lex('N','NP', lf(2,3,'N'))))).
-		 * 
+		 *
 		 * w(2, 1, 'I', 'I', 'PRP', 'I-NP', 'O', 'NP'). w(2, 2, 'like', 'like', 'VBP', 'I-VP', 'O', '(S[dcl]\NP)/NP').
 		 * w(2, 3, 'cake', 'cake', 'NN', 'I-NP', 'O', 'N').
 		 */
@@ -844,6 +893,11 @@ public abstract class ParsePrinter {
 			return false;
 		}
 
+		@Override
+		protected boolean outputsDependencies() {
+			return false;
+		}
+
 	}
 
 	private static String getUnaryRuleName(final Category initial, final Category result) {
@@ -957,6 +1011,11 @@ public abstract class ParsePrinter {
 			return false;
 		}
 
+		@Override
+		protected boolean outputsDependencies() {
+			return false;
+		}
+
 	}
 
 	public static class DependenciesPrinter extends ParsePrinter {
@@ -1009,6 +1068,11 @@ public abstract class ParsePrinter {
 			return false;
 		}
 
+		@Override
+		protected boolean outputsDependencies() {
+			return true;
+		}
+
 	}
 
 	protected abstract boolean outputsLogic();
@@ -1017,4 +1081,11 @@ public abstract class ParsePrinter {
 		return print(parses == null ? null : parses.stream().map(x -> x.getCcgParse()).collect(Collectors.toList()), id);
 	}
 
+	/**
+	 * Override this if only printing only syntactic output (which saves pipeline models from having to build
+	 * dependencies).
+	 */
+	protected boolean outputsDependencies() {
+		return true;
+	}
 }

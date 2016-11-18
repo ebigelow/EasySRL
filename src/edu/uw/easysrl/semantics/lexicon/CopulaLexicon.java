@@ -6,8 +6,10 @@ import java.util.Optional;
 import edu.uw.easysrl.dependencies.Coindexation;
 import edu.uw.easysrl.dependencies.ResolvedDependency;
 import edu.uw.easysrl.semantics.AtomicSentence;
+import edu.uw.easysrl.semantics.Constant;
 import edu.uw.easysrl.semantics.LambdaExpression;
 import edu.uw.easysrl.semantics.Logic;
+import edu.uw.easysrl.semantics.SemanticType;
 import edu.uw.easysrl.semantics.Variable;
 import edu.uw.easysrl.syntax.grammar.Category;
 import edu.uw.easysrl.syntax.grammar.Preposition;
@@ -44,16 +46,23 @@ public class CopulaLexicon extends Lexicon {
 	private Logic makeCopulaVerb(final List<ResolvedDependency> deps, final List<Variable> vars, final Variable head,
 			final CCGandSRLparse parse) {
 		Logic statement;
-		if (deps.get(1).getPreposition() != Preposition.NONE) {
+		if (deps.get(1) != null && deps.get(1).getPreposition() != Preposition.NONE) {
 			// S\NP/PP_on --> on(x,y,e)
 			statement = new AtomicSentence(getPrepositionPredicate(deps, 1, parse), vars.get(1), vars.get(0), head);
 		} else {
-			if (deps.get(0).getPreposition() != Preposition.NONE) {
+			if (deps.get(0) != null && deps.get(0).getPreposition() != Preposition.NONE) {
 				// Can happen in questions: S[q]/PP/NP Is the ball on the table?
 				statement = new AtomicSentence(getPrepositionPredicate(deps, 0, parse), vars.get(0), vars.get(1), head);
 			} else {
 				// S\NP/NP
-				statement = new AtomicSentence(equals, vars.get(0), vars.get(1), head);
+				SemanticType type = SemanticType.T;
+				type = SemanticType.make(head.getType(), type);
+				type = SemanticType.make(vars.get(1).getType(), type);
+				type = SemanticType.make(vars.get(0).getType(), type);
+				
+				Constant pred = new Constant("eq", type);
+				
+				statement = new AtomicSentence(pred, vars.get(0), vars.get(1), head);
 			}
 		}
 

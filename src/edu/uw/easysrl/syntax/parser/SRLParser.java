@@ -1,6 +1,8 @@
 package edu.uw.easysrl.syntax.parser;
 
+import java.io.IOException;
 import java.io.Serializable;
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -10,7 +12,11 @@ import java.util.stream.Collectors;
 import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.Table;
 
+import edu.uw.easysrl.dependencies.DependencyGenerator;
 import edu.uw.easysrl.dependencies.ResolvedDependency;
+import edu.uw.easysrl.dependencies.SRLFrame;
+import edu.uw.easysrl.dependencies.SRLFrame.SRLLabel;
+import edu.uw.easysrl.dependencies.UnlabelledDependency;
 import edu.uw.easysrl.main.InputReader.InputToParser;
 import edu.uw.easysrl.main.InputReader.InputWord;
 import edu.uw.easysrl.semantics.lexicon.Lexicon;
@@ -28,11 +34,11 @@ public abstract class SRLParser {
 		this.tagger = tagger;
 	}
 
-	public final List<CCGandSRLparse> parseTokens(final List<InputWord> tokens) {
-		return parseTokens2(tagger.tag(tokens));
+	public final List<CCGandSRLparse> parseTokens(final InputToParser tokens) {
+		return parseTokens2(tokens.isPOStagged() ? tokens : tagger.tag(tokens));
 	}
 
-	protected abstract List<CCGandSRLparse> parseTokens2(List<InputWord> tokens);
+	protected abstract List<CCGandSRLparse> parseTokens2(InputToParser tokens);
 
 	public static class BackoffSRLParser extends SRLParser {
 		private final SRLParser[] parsers;
@@ -44,7 +50,7 @@ public abstract class SRLParser {
 		}
 
 		@Override
-		protected List<CCGandSRLparse> parseTokens2(final List<InputWord> tokens) {
+		protected List<CCGandSRLparse> parseTokens2(final InputToParser tokens) {
 			for (final SRLParser parser : parsers) {
 				final List<CCGandSRLparse> parses = parser.parseTokens(tokens);
 				if (parses != null) {
@@ -77,7 +83,7 @@ public abstract class SRLParser {
 		}
 
 		@Override
-		protected List<CCGandSRLparse> parseTokens2(final List<InputWord> tokens) {
+		protected List<CCGandSRLparse> parseTokens2(final InputToParser tokens) {
 
 			List<CCGandSRLparse> parse = parser.parseTokens(tokens);
 
@@ -103,15 +109,15 @@ public abstract class SRLParser {
 		}
 
 		@Override
-		protected List<CCGandSRLparse> parseTokens2(final List<InputWord> tokens) {
-			final List<Scored<SyntaxTreeNode>> parses = parser.doParsing(new InputToParser(tokens, null, null, false));
+		protected List<CCGandSRLparse> parseTokens2(final InputToParser tokens) {
+			final List<Scored<SyntaxTreeNode>> parses = parser.doParsing(tokens);
 			if (parses == null) {
 				return null;
 			} else {
 				return parses
 						.stream()
-						.map(x -> new CCGandSRLparse(x.getObject(), x.getObject().getAllLabelledDependencies(), tokens))
-						.collect(Collectors.toList());
+						.map(x -> new CCGandSRLparse(x.getObject(), x.getObject().getAllLabelledDependencies(), tokens
+								.getInputWords())).collect(Collectors.toList());
 			}
 		}
 
@@ -170,34 +176,71 @@ public abstract class SRLParser {
 	}
 
 	public static class PipelineSRLParser extends JointSRLParser {
-		public PipelineSRLParser(final Parser parser, final LabelClassifier classifier, final POSTagger tagger) {
+		private final DependencyGenerator dependencyGenerator;
+
+		public PipelineSRLParser(final Parser parser, final LabelClassifier classifier, final POSTagger tagger)
+				throws IOException {
 			super(parser, tagger);
 
+			this.dependencyGenerator = new DependencyGenerator(parser.getUnaryRules());
 			this.classifier = classifier;
 		}
 
 		private final LabelClassifier classifier;
 
 		@Override
-		public List<CCGandSRLparse> parseTokens2(final List<InputWord> tokens) {
+		public List<CCGandSRLparse> parseTokens2(final InputToParser tokens) {
 
-			final List<CCGandSRLparse> parse = super.parseTokens2(tokens);
-			if (parse == null) {
+			final List<CCGandSRLparse> parses = super.parseTokens2(tokens);
+			if (parses == null) {
 				return null;
 			}
 
-			return parse.stream().map(x -> addDependencies(tokens, x)).collect(Collectors.toList());
+			return parses.stream().map(x -> addDependencies(tokens.getInputWords(), x)).collect(Collectors.toList());
 		}
 
 		private CCGandSRLparse addDependencies(final List<InputWord> tokens, final CCGandSRLparse parse) {
+			final Collection<UnlabelledDependency> unlabelledDependencies = new ArrayList<>();
+			// Get the dependencies in this parse.
+			final SyntaxTreeNode annotatedSyntaxTree = dependencyGenerator.generateDependencies(parse.getCcgParse(),
+					unlabelledDependencies);
 			final Collection<ResolvedDependency> result = new ArrayList<>();
-			for (final ResolvedDependency dep : parse.getDependencyParse()) {
-				if (dep.getArgumentIndex() != dep.getHead()) {
-					result.add(dep.overwriteLabel(classifier.classify(dep.dropLabel(), tokens)));
-				}
+			for (final UnlabelledDependency dep : unlabelledDependencies) {
+				// Add labels to the dependencies using the classifier.
+				result.addAll(dep.setLabel(classifier.classify(dep, tokens)).stream()
+						.filter(x -> x.getHead() != x.getArgument()).collect(Collectors.toList()));
 			}
-			return new CCGandSRLparse(parse.getCcgParse(), result, tokens);
+			return new CCGandSRLparse(annotatedSyntaxTree, result, tokens);
 		}
+	}
 
+	public List<CCGandSRLparse> parseTokens(final List<InputWord> words) {
+		return parseTokens(new InputToParser(words, null, null, false));
+	}
+
+	/**
+	 * Provides a wrapper around a syntactic parser that assigned default semantic roles.
+	 */
+	public static SRLParser wrapperOf(final Parser parser) {
+		try {
+			final LabelClassifier dummyLabelClassifier = new LabelClassifier(null) {
+				private static final long serialVersionUID = 1L;
+
+				@Override
+				public SRLLabel classify(final UnlabelledDependency dep, final List<InputWord> sentence) {
+					return SRLFrame.NONE;
+				}
+			};
+			final POSTagger dummyPostagger = new POSTagger() {
+
+				@Override
+				public List<InputWord> tag(final List<InputWord> words) {
+					return words;
+				}
+			};
+			return new PipelineSRLParser(parser, dummyLabelClassifier, dummyPostagger);
+		} catch (final IOException e) {
+			throw new UncheckedIOException(e);
+		}
 	}
 }

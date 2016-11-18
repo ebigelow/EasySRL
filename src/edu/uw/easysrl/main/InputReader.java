@@ -1,18 +1,30 @@
 package edu.uw.easysrl.main;
 
+import com.google.common.base.Preconditions;
+import com.google.common.base.Stopwatch;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.InputMismatchException;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
+import java.util.StringTokenizer;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
+import edu.uw.Taggerflow;
+import edu.uw.TaggerflowProtos.TaggedSentence;
+import edu.uw.TaggerflowProtos.TaggedToken;
 import edu.uw.easysrl.main.EasySRL.InputFormat;
 import edu.uw.easysrl.syntax.grammar.Category;
 import edu.uw.easysrl.syntax.grammar.SyntaxTreeNode.SyntaxTreeNodeLeaf;
+import edu.uw.easysrl.syntax.tagger.Tagger.ScoredCategory;
+import edu.uw.easysrl.syntax.tagger.TaggerflowLSTM;
 import edu.uw.easysrl.util.Util;
 
 public abstract class InputReader {
@@ -24,7 +36,6 @@ public abstract class InputReader {
 			this.word = word;
 			this.pos = pos;
 			this.ner = ner;
-			this.lowerCase = word.toLowerCase();
 		}
 
 		InputWord(final String word) {
@@ -34,10 +45,13 @@ public abstract class InputReader {
 		public final String word;
 		public final String pos;
 		public final String ner;
-		public final String lowerCase;
 
 		public static List<InputWord> listOf(final String... words) {
-			return listOf(Arrays.asList(words));
+			final List<InputWord> result = new ArrayList<>(words.length);
+			for (int i = 0; i < words.length; i++) {
+				result.add(new InputWord(words[i]));
+			}
+			return result;
 		}
 
 		public static List<InputWord> listOf(final List<String> words) {
@@ -48,8 +62,7 @@ public abstract class InputReader {
 			return result;
 		}
 
-		public static List<InputWord> fromLeaves(
-				final List<SyntaxTreeNodeLeaf> leaves) {
+		public static List<InputWord> fromLeaves(final List<SyntaxTreeNodeLeaf> leaves) {
 			final List<InputWord> result = new ArrayList<>(leaves.size());
 			for (final SyntaxTreeNodeLeaf leaf : leaves) {
 				result.add(InputWord.valueOf(leaf));
@@ -70,75 +83,78 @@ public abstract class InputReader {
 		@Override
 		public boolean equals(final Object obj) {
 			final InputWord other = (InputWord) obj;
-			return Objects.equals(word, other.word)
-					&& Objects.equals(ner, other.ner)
-					&& Objects.equals(pos, other.pos);
+			return Objects.equals(word, other.word) && Objects.equals(ner, other.ner) && Objects.equals(pos, other.pos);
 		}
 
 		@Override
 		public String toString() {
-			return word + (pos != null ? "|" + pos : "")
-					+ (ner != null ? "|" + ner : "");
+			return word + (pos != null ? "|" + pos : "") + (ner != null ? "|" + ner : "");
 		}
 	}
 
-	Iterable<InputToParser> readFile(final File input) throws IOException {
+	public Iterable<InputToParser> readFile(final File input) throws IOException {
 		final Iterator<String> inputIt = Util.readFileLineByLine(input);
 
-		return new Iterable<InputToParser>() {
+		return () -> new Iterator<InputToParser>() {
+			private InputToParser next = getNext();
 
 			@Override
-			public Iterator<InputToParser> iterator() {
-				return new Iterator<InputToParser>() {
-
-					private InputToParser next = getNext();
-
-					@Override
-					public boolean hasNext() {
-						return next != null;
-					}
-
-					private InputToParser getNext() {
-						while (inputIt.hasNext()) {
-							final String nextLine = inputIt.next();
-							if (!nextLine.startsWith("#")
-									&& !nextLine.isEmpty()) {
-								// Skip commented or empty lines;
-								return readInput(nextLine);
-							}
-						}
-
-						return null;
-					}
-
-					@Override
-					public InputToParser next() {
-						final InputToParser result = next;
-						next = getNext();
-						return result;
-					}
-
-					@Override
-					public void remove() {
-						throw new UnsupportedOperationException();
-					}
-
-				};
+			public boolean hasNext() {
+				return next != null;
 			}
 
+			private InputToParser getNext() {
+				while (inputIt.hasNext()) {
+					final String nextLine = inputIt.next();
+					if (!nextLine.startsWith("#") && !nextLine.isEmpty()) {
+						// Skip commented or empty lines;
+						return readInput(nextLine);
+					}
+				}
+
+				return null;
+			}
+
+			@Override
+			public InputToParser next() {
+				final InputToParser result = next;
+				next = getNext();
+				return result;
+			}
+
+			@Override
+			public void remove() {
+				throw new UnsupportedOperationException();
+			}
+		};
+	}
+
+	public Iterator<InputToParser> readInput(final File file) throws IOException {
+		final Iterator<String> lines = Util.readFileLineByLine(file);
+		return new Iterator<InputToParser>() {
+
+			@Override
+			public boolean hasNext() {
+				return lines.hasNext();
+			}
+
+			@Override
+			public InputToParser next() {
+				return readInput(lines.next());
+			}
 		};
 	}
 
 	public abstract InputToParser readInput(String line);
 
-	public static class InputToParser {
+	public static class InputToParser implements Serializable {
+		private static final long serialVersionUID = 1L;
+
 		private final List<InputWord> words;
 		private final boolean isAlreadyTagged;
 
-		public InputToParser(final List<InputWord> words,
-				final List<Category> goldCategories,
-				final List<List<SyntaxTreeNodeLeaf>> inputSupertags,
-				final boolean isAlreadyTagged) {
+		public InputToParser(final List<InputWord> words, final List<Category> goldCategories,
+				final List<List<ScoredCategory>> inputSupertags, final boolean isAlreadyTagged) {
 			this.words = words;
 			this.goldCategories = goldCategories;
 			this.inputSupertags = inputSupertags;
@@ -146,30 +162,21 @@ public abstract class InputReader {
 		}
 
 		private final List<Category> goldCategories;
-		private final List<List<SyntaxTreeNodeLeaf>> inputSupertags;
+		private final List<List<ScoredCategory>> inputSupertags;
 
 		public int length() {
 			return words.size();
 		}
 
 		/**
-		 * If true, the Parser should not supertag the data itself, and use
-		 * getInputSupertags() instead.
+		 * If true, the Parser should not supertag the data itself, and use getInputSupertags() instead.
 		 */
 		public boolean isAlreadyTagged() {
 			return isAlreadyTagged;
 		}
 
-		public List<List<SyntaxTreeNodeLeaf>> getInputSupertags() {
+		public List<List<ScoredCategory>> getInputSupertags() {
 			return inputSupertags;
-		}
-
-		public List<SyntaxTreeNodeLeaf> getInputSupertags1best() {
-			final List<SyntaxTreeNodeLeaf> result = new ArrayList<>();
-			for (final List<SyntaxTreeNodeLeaf> tagsForWord : inputSupertags) {
-				result.add(tagsForWord.get(0));
-			}
-			return result;
 		}
 
 		public boolean haveGoldCategories() {
@@ -202,6 +209,9 @@ public abstract class InputReader {
 			return new InputToParser(inputWords, null, null, false);
 		}
 
+		public boolean isPOStagged() {
+			return words.size() == 0 || words.get(0).pos != null;
+		}
 	}
 
 	private static class RawInputReader extends InputReader {
@@ -209,19 +219,16 @@ public abstract class InputReader {
 		@Override
 		public InputToParser readInput(final String line) {
 			// TODO quotes
-			return InputToParser.fromTokens(Arrays.asList(line
-					.replaceAll("\"", "").replaceAll("  +", " ").trim()
-					.split(" ")));
+			return InputToParser
+					.fromTokens(Arrays.asList(line.replaceAll("\"", "").replaceAll("  +", " ").trim().split(" ")));
 		}
 	}
 
 	/**
-	 * Reads input tagged with a distribution of supertags. The format can be
-	 * produced running the C&C supertagger with the output format:
-	 * %w\t%p\t%S|\n
+	 * Reads input tagged with a distribution of supertags. The format can be produced running the C&C supertagger with
+	 * the output format: %w\t%p\t%S|\n
 	 *
-	 * Example: Pierre NNP 0 N/N 0.99525070603732 N 0.0026450007306822|Vinken
-	 * NNP 0 N 0.70743834018551 S/S...
+	 * Example: Pierre NNP 0 N/N 0.99525070603732 N 0.0026450007306822|Vinken NNP 0 N 0.70743834018551 S/S...
 	 */
 
 	private static class GoldInputReader extends InputReader {
@@ -231,7 +238,7 @@ public abstract class InputReader {
 			final List<Category> result = new ArrayList<>();
 			final String[] goldEntries = line.split(" ");
 			final List<InputWord> words = new ArrayList<>(goldEntries.length);
-			final List<List<SyntaxTreeNodeLeaf>> supertags = new ArrayList<>();
+			final List<List<ScoredCategory>> supertags = new ArrayList<>();
 			for (final String entry : goldEntries) {
 				final String[] goldFields = entry.split("\\|");
 
@@ -239,18 +246,15 @@ public abstract class InputReader {
 					continue; // TODO quotes
 				}
 				if (goldFields.length < 3) {
-					throw new InputMismatchException(
-							"Invalid input: expected \"word|POS|SUPERTAG\" but was: "
-									+ entry);
+					throw new InputMismatchException("Invalid input: expected \"word|POS|SUPERTAG\" but was: " + entry);
 				}
 
 				final String word = goldFields[0];
 				final String pos = goldFields[1];
 				final Category category = Category.valueOf(goldFields[2]);
-				words.add(new InputWord(word));
+				words.add(new InputWord(word, pos, null));
 				result.add(category);
-				supertags.add(Arrays.asList(new SyntaxTreeNodeLeaf(word, pos,
-						null, category, supertags.size())));
+				supertags.add(Collections.singletonList(new ScoredCategory(category, Double.MAX_VALUE)));
 			}
 			return new InputToParser(words, result, supertags, false);
 		}
@@ -259,26 +263,73 @@ public abstract class InputReader {
 		}
 	}
 
+	public static class SupertaggedInputReader extends InputReader {
+		private final List<Category> cats;
+
+		// Word|N=3|NP=2
+		@Override
+		public InputToParser readInput(final String line) {
+			final List<Category> result = new ArrayList<>();
+			final String[] goldEntries = line.split(" ");
+			final List<InputWord> words = new ArrayList<>(goldEntries.length);
+			final List<List<ScoredCategory>> supertags = new ArrayList<>();
+			for (final String entry : goldEntries) {
+				// final String[] goldFields = entry.split("\\|");
+				final StringTokenizer tokenizer = new StringTokenizer(entry, "|");
+
+				final String word = tokenizer.nextToken();// goldFields[0];
+				// final String pos = goldFields[1];
+				List<ScoredCategory> tagDist = new ArrayList<>();
+				words.add(new InputWord(word));
+
+				// final String[] tags = goldFields[2].split("\\|");
+				// result.add(Category.valueOf(tags[0]));
+				// for (int i = 1; i < goldFields.length; i++) {
+				while (tokenizer.hasMoreTokens()) {
+					final String tagAndScore = tokenizer.nextToken();
+					final int equals = tagAndScore.indexOf("=");
+					final Category category = Category.valueOf(tagAndScore.substring(0, equals));
+					//cats.get(Integer.valueOf(tagAndScore.substring(0, equals)));
+
+					tagDist.add(new ScoredCategory(category, Double.valueOf(tagAndScore.substring(equals + 1))));
+				}
+				Collections.sort(tagDist);
+
+				final double bestScore = tagDist.get(0).getScore();
+				final double threshold = 0.000001 * Math.exp(bestScore);
+				for (int i = 1; i < tagDist.size(); i++) {
+					if (Math.exp(tagDist.get(i).getScore()) < threshold) {
+						tagDist = tagDist.subList(0, i);
+						break;
+					}
+				}
+
+				supertags.add(tagDist);
+			}
+			return new InputToParser(words, result, supertags, true);
+		}
+
+		public SupertaggedInputReader(final List<Category> cats) {
+			this.cats = cats;
+		}
+	}
+
 	private static class POSTaggedInputReader extends InputReader {
 
 		@Override
 		public InputToParser readInput(final String line) {
 			final String[] taggedEntries = line.split(" ");
-			final List<InputWord> inputWords = new ArrayList<>(
-					taggedEntries.length);
+			final List<InputWord> inputWords = new ArrayList<>(taggedEntries.length);
 			for (final String entry : taggedEntries) {
 				final String[] taggedFields = entry.split("\\|");
 
 				if (taggedFields.length < 2) {
-					throw new InputMismatchException(
-							"Invalid input: expected \"word|POS\" but was: "
-									+ entry);
+					throw new InputMismatchException("Invalid input: expected \"word|POS\" but was: " + entry);
 				}
 				if (taggedFields[0].equals("\"")) {
 					continue; // TODO quotes
 				}
-				inputWords.add(new InputWord(taggedFields[0], taggedFields[1],
-						null));
+				inputWords.add(new InputWord(taggedFields[0], taggedFields[1], null));
 			}
 			return new InputToParser(inputWords, null, null, false);
 		}
@@ -288,8 +339,7 @@ public abstract class InputReader {
 		@Override
 		public InputToParser readInput(final String line) {
 			final String[] taggedEntries = line.split(" ");
-			final List<InputWord> inputWords = new ArrayList<>(
-					taggedEntries.length);
+			final List<InputWord> inputWords = new ArrayList<>(taggedEntries.length);
 			for (final String entry : taggedEntries) {
 				final String[] taggedFields = entry.split("\\|");
 
@@ -297,14 +347,10 @@ public abstract class InputReader {
 					continue; // TODO quotes
 				}
 				if (taggedFields.length < 3) {
-					throw new InputMismatchException(
-							"Invalid input: expected \"word|POS|NER\" but was: "
-									+ entry
-									+ "\n"
-									+ "The C&C can produce this format using: \"bin/pos -model models/pos | bin/ner -model models/ner -ofmt \"%w|%p|%n \\n\"\"");
+					throw new InputMismatchException("Invalid input: expected \"word|POS|NER\" but was: " + entry + "\n"
+							+ "The C&C can produce this format using: \"bin/pos -model models/pos | bin/ner -model models/ner -ofmt \"%w|%p|%n \\n\"\"");
 				}
-				inputWords.add(new InputWord(taggedFields[0], taggedFields[1],
-						taggedFields[2]));
+				inputWords.add(new InputWord(taggedFields[0], taggedFields[1], taggedFields[2]));
 			}
 			return new InputToParser(inputWords, null, null, false);
 		}
@@ -324,4 +370,69 @@ public abstract class InputReader {
 			throw new Error("Unknown input format: " + inputFormat);
 		}
 	}
+
+	/**
+	 * Runs a TensorFlow library which deals with loading and tagging the file.
+	 */
+	public static class TensorFlowInputReader extends InputReader {
+		private final Taggerflow tagger;
+		private final List<Category> categories;
+		private final int maxBatchSize;
+		private final Stopwatch gpuTime = Stopwatch.createUnstarted();
+
+		public TensorFlowInputReader(final File folder, final List<Category> categories, final int maxBatchSize) {
+			tagger = new Taggerflow(folder, 1e-5);
+			this.categories = categories;
+			this.maxBatchSize = maxBatchSize;
+		}
+
+		@Override
+		public InputToParser readInput(final String line) {
+			throw new UnsupportedOperationException("TensorFlowInputReader can only be used in batch mode");
+		}
+
+		public long getSupertaggingTime(final TimeUnit timeUnit) {
+			return gpuTime.elapsed(timeUnit);
+		}
+
+		public void resetSupertaggingTime() {
+			gpuTime.reset();
+		}
+
+		@Override
+		public Iterable<InputToParser> readFile(final File file) throws IOException {
+			return () -> {
+				gpuTime.start();
+				final Iterator<TaggedSentence> taggedSentenceIterator = tagger
+						.predict(file.getAbsolutePath(), maxBatchSize).iterator();
+				gpuTime.stop();
+
+				return new Iterator<InputToParser>() {
+					@Override
+					public boolean hasNext() {
+						return taggedSentenceIterator.hasNext();
+					}
+
+					@Override
+					public InputToParser next() {
+						gpuTime.start();
+						final TaggedSentence sentence = taggedSentenceIterator.next();
+						gpuTime.stop();
+						final List<List<ScoredCategory>> tagDist = TaggerflowLSTM
+								.getScoredCategories(sentence, categories);
+						final List<InputWord> words = sentence.getTokenList().stream().map(TaggedToken::getWord)
+								.map(InputWord::new).collect(Collectors.toList());
+
+						if (words.size() == 0) {
+							return next();// FIXME sentences not parsed by TensorFlow
+						}
+
+						Preconditions.checkState(words.size() == tagDist.size());
+						return new InputToParser(words, null, tagDist, true);
+					}
+				};
+			};
+		}
+	}
+
 }

@@ -4,8 +4,7 @@ import edu.uw.easysrl.syntax.grammar.Combinator.RuleClass;
 import edu.uw.easysrl.syntax.grammar.Combinator.RuleType;
 
 public class NormalForm {
-
-	public static boolean isOk(final RuleClass leftRuleClass, final RuleClass rightRuleClass, final RuleType ruleType,
+	public boolean isOk(final RuleClass leftRuleClass, final RuleClass rightRuleClass, final RuleType ruleType,
 			@SuppressWarnings("unused") final Category leftCategory, final Category rightCategory,
 			final Category result, final boolean isPrefixOfSentence) {
 		if ((leftRuleClass == RuleClass.FC || leftRuleClass == RuleClass.GFC)
@@ -75,7 +74,7 @@ public class NormalForm {
 		}
 
 		if ((leftRuleClass == RuleClass.LP && ruleType != RuleType.RP && isPrefixOfSentence)
-				|| rightRuleClass == RuleClass.RP || rightRuleClass == RuleClass.LP) {
+				|| rightRuleClass == RuleClass.LP) {
 			// Remove punctuation as late as possible.
 			return false;
 		}
