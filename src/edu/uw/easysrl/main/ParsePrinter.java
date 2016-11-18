@@ -123,6 +123,12 @@ public abstract class ParsePrinter {
 				node.getLeftChild().accept(this);
 				node.getRightChild().accept(this);
 
+                // NEW CODE
+                result.append("{");
+                result.append(node.getRuleType());
+                result.append(", ");
+                result.append(node.getRuleClass());
+                result.append("}");
 				result.append(") ");
 
 			}
@@ -795,8 +801,15 @@ public abstract class ParsePrinter {
 				currentIndent++;
 				node.getLeftChild().accept(this);
 				node.getRightChild().accept(this);
+				// NEW CODE
+                result.append("{");
+                result.append(node.getRuleType());
+                result.append(", ");
+                result.append(node.getRuleClass());
+                result.append("}");
 				result.append(")");
 				currentIndent--;
+
 			}
 
 			@Override
@@ -872,6 +885,13 @@ public abstract class ParsePrinter {
 				node.getLeftChild().accept(this);
 				node.getRightChild().accept(this);
 
+
+                // NEW CODE
+                result.append("{");
+                result.append(node.getRuleType());
+                result.append(", ");
+                result.append(node.getRuleClass());
+                result.append("}");
 				result.append(") ");
 
 			}
